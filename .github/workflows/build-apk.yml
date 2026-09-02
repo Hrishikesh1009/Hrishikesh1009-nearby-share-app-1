@@ -1,0 +1,37 @@
+name: Build APK
+
+# Builds a debug-signed, installable APK on every push and on demand, and
+# attaches it to the run as a downloadable artifact. Debug-signed so it
+# installs without a keystore — replace before distributing beyond your
+# own testing. Runs on GitHub's infrastructure specifically because the
+# sandbox this app was developed in has no Android SDK access (its egress
+# policy blocks dl.google.com); GitHub-hosted runners have no such
+# restriction.
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter build apk --debug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nearby-share-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
