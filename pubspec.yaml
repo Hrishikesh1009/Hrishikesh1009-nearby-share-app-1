@@ -19,11 +19,12 @@ dependencies:
   # Provider is the seam between network services and UI state.
   provider: ^6.1.2
 
-  # Layer 1 (Wi-Fi Direct / Multipeer) has no dependency right now — see
-  # core/discovery/nearby_discovery_service.dart's doc comment for why
-  # (flutter_nearby_connections is dead and fails a modern Android build;
-  # this layer is a documented no-op until a maintained replacement is
-  # wired up and build-verified).
+  # Layer 1 — real Wi-Fi Direct on Android (WifiP2pManager under the
+  # hood), actively maintained. No iOS equivalent — Apple doesn't expose
+  # peer-to-peer Wi-Fi Direct/Multipeer Connectivity the same way, and
+  # this package is Android-only; see
+  # core/discovery/nearby_discovery_service.dart for how that's handled.
+  flutter_p2p_connection: ^3.0.3
 
   # Layer 2 — mDNS / Bonjour discovery + advertisement on the local Wi-Fi
   # router network (zero-configuration).
@@ -42,7 +43,9 @@ dependencies:
   crypto: ^3.0.7
   convert: ^3.1.2
 
-  permission_handler: ^13.0.1
+  # Capped by flutter_p2p_connection's own dependency constraint
+  # (permission_handler ^11.3.1); nothing in this app needs a newer one.
+  permission_handler: ^11.3.1
   path_provider: ^2.1.6
   uuid: ^4.6.0
   file_picker: ^12.1.3

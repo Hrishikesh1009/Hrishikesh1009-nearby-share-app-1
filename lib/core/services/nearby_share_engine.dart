@@ -242,8 +242,22 @@ class NearbyShareEngine extends ChangeNotifier {
   /// renders (title, "File X of Y", aggregate progress/ETA).
   Future<void> sendFiles(PeerDevice peer, List<File> files) async {
     if (files.isEmpty) return;
-    final host = peer.host;
-    final port = peer.port;
+
+    var host = peer.host;
+    var port = peer.port;
+    var joinedNearbyGroup = false;
+
+    if (host == null && peer.layer == TransportLayer.nearby && peer.nearbyEndpointId != null) {
+      // Nearby-layer peers aren't dialable until we actually join their
+      // Wi-Fi Direct group (see NearbyDiscoveryService's doc comment) —
+      // mDNS/BLE peers already carry a resolved host/port from discovery
+      // alone, but this layer's whole point is that discovery (BLE) and
+      // the data-plane link (Wi-Fi Direct) are established separately.
+      host = await _discovery.nearbyLayer.connectAndGetHostIp(peer.nearbyEndpointId!);
+      port = _transferServer.port;
+      joinedNearbyGroup = host != null;
+    }
+
     if (host == null || port == null) {
       throw StateError(
         '${peer.name} has no reachable data layer yet '
@@ -252,6 +266,18 @@ class NearbyShareEngine extends ChangeNotifier {
       );
     }
 
+    try {
+      await _sendFilesTo(peer, files, host, port);
+    } finally {
+      if (joinedNearbyGroup) {
+        // Restore normal Wi-Fi/internet connectivity now that the
+        // transfer (or the attempt) is over.
+        unawaited(_discovery.nearbyLayer.disconnectFromPeer());
+      }
+    }
+  }
+
+  Future<void> _sendFilesTo(PeerDevice peer, List<File> files, String host, int port) async {
     final sizes = await Future.wait(files.map((f) => f.length()));
     final totalBytes = sizes.fold<int>(0, (a, b) => a + b);
     final batch = BatchTransfer(peer: peer, files: files, totalBytes: totalBytes);

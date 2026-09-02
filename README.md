@@ -67,33 +67,47 @@ on a `#eae7e1` desktop background.
 
 | Layer | Purpose | Package |
 |---|---|---|
-| 1. Wi-Fi Direct / Multipeer | OS-managed high-throughput link, preferred | *disabled — see below* |
+| 1. Wi-Fi Direct / Multipeer | OS-managed high-throughput link, preferred | `flutter_p2p_connection` (**Android only**) |
 | 2. mDNS / Bonjour | Zero-config discovery on the local router network | `bonsoir` |
 | 3. Bluetooth LE | Discovery/handshake only, never the file stream | `flutter_blue_plus` |
 
-**Layer 1 is currently a documented no-op**, not a working implementation.
-It originally depended on `flutter_nearby_connections`, discovered — by
-actually running the real build in CI, not by inspection — to be
-unmaintained (last published December 2023) and broken against any
-current Android Gradle Plugin: its own `android/build.gradle` calls the
-long-removed `jcenter()` repository and fails outright. Rather than ship a
-build that doesn't compile, `core/discovery/nearby_discovery_service.dart`
-stands this layer down cleanly (never active, never emits a peer) and the
-app runs on layers 2+3 alone; see that file's doc comment for maintained
-candidates to swap in (`flutter_p2p_connection`, `nearby_connections`),
-neither of which is a drop-in API match, so **build-verify (`flutter build
-apk`, ideally via the CI workflow) before trusting whichever one goes in**
-— the same mistake that put the dead plugin here in the first place.
+**Layer 1 is a real, working implementation on Android** via
+`flutter_p2p_connection` (actively maintained; wraps `WifiP2pManager`
+directly). It replaces an earlier attempt built on
+`flutter_nearby_connections`, discovered — by actually running the real
+build in CI, not by inspection — to be unmaintained (last published
+December 2023) and broken against any current Android Gradle Plugin (its
+own `android/build.gradle` called the long-removed `jcenter()` repository).
+That plugin is gone; `core/discovery/nearby_discovery_service.dart` now
+implements Layer 1 for real:
+
+- Every device simultaneously **hosts its own Wi-Fi Direct group**
+  (`FlutterP2pHost.createGroup(advertise: true)`) and **scans via BLE**
+  for other devices' host advertisements (`FlutterP2pClient.startScan`) —
+  BLE here is discovery/credential-exchange only, same as Layer 3.
+- When the user picks a peer found on this layer, `NearbyShareEngine`
+  calls `connectAndGetHostIp()`, which joins that peer's Wi-Fi Direct
+  group (`FlutterP2pClient.connectWithDevice`) and resolves the host's
+  gateway IP from `streamHotspotState()`. Joining a group associates the
+  device's Wi-Fi radio with the peer's hotspot for the transfer's
+  duration — normal Wi-Fi/internet connectivity is unavailable until
+  `disconnectFromPeer()` restores it, the same real tradeoff any Wi-Fi
+  Direct transfer makes.
+- **Android only** — `flutter_p2p_connection` registers no iOS
+  implementation, so this layer never activates on iOS (Layers 2 and 3
+  still work there). Apple's nearest equivalent, Multipeer Connectivity,
+  is a materially different API surface and is out of scope here.
 
 All three run concurrently (`AggregatedDiscoveryService`); a peer visible on
 more than one layer is de-duplicated with layer 1 preferred. **The file
 bytes always travel over our own raw `dart:io.Socket`** (`core/transport/`)
-— never through a plugin's own message channel and never over HTTP or
-WebSockets. On Layer 2 that socket dials the mDNS-advertised host:port
-directly. On Layer 1, the OS-managed session establishes a shared local
-network segment; the two sides exchange their real listener host:port over
-that session's own control channel, then dial our socket on it exactly the
-same way — see `core/transport/local_address.dart`.
+— never through a plugin's own message channel/`broadcastFile`-`downloadFile`
+API, and never over HTTP or WebSockets. On Layer 2 that socket dials the
+mDNS-advertised host:port directly. On Layer 1, once
+`connectAndGetHostIp()` joins the peer's group, `NearbyShareEngine` dials
+our own socket on that resolved IP and the app's normal transfer port —
+see `core/transport/local_address.dart` for the equivalent handling on
+Layer 2.
 
 ### Encrypted, non-HTTP data plane
 
@@ -214,19 +228,23 @@ overlay — all matched the source design.
 5. **A GitHub Actions CI workflow** (`.github/workflows/build-apk.yml`) —
    added because this sandbox's network policy blocks `dl.google.com`,
    so the Android SDK can't be installed here to build a real `.apk`
-   locally. This immediately proved its worth: the first two CI runs
-   both failed on real errors invisible to `flutter analyze`/the Linux
-   build — a missing `gradle-wrapper.properties` pinning an incompatible
-   Gradle version (fixed by regenerating `android/` with `flutter create
-   --platforms=android .`, the same approach used for `linux/`), and
+   locally. This immediately proved its worth across several rounds of
+   real, CI-only errors invisible to `flutter analyze`/the Linux build: a
+   missing `gradle-wrapper.properties` pinning an incompatible Gradle
+   version (fixed by regenerating `android/` with `flutter create
+   --platforms=android .`, the same approach used for `linux/`);
    `flutter_nearby_connections` (unmaintained since December 2023) fatally
    calling the long-removed Gradle `jcenter()` repository in its own build
-   script. That plugin has been removed — see "Failover connection stack"
-   above and `core/discovery/nearby_discovery_service.dart` for what that
-   means and how to restore it properly. Once fixed, this workflow is the
-   real, repeatable answer to "does the Android build work," not a one-time
-   claim — check its latest run for current status before trusting an APK
-   from an old one.
+   script (fixed by removing it, temporarily standing Layer 1 down); and
+   `permission_handler_android` requiring `compileSdk 37` while the
+   project compiled against 36 (fixed by pinning `compileSdk` explicitly
+   in `android/app/build.gradle.kts`). Layer 1 was later restored for real
+   with `flutter_p2p_connection` — see "Failover connection stack" above —
+   which required relaxing this project's own `permission_handler`
+   constraint from `^13.0.1` to `^11.3.1` to satisfy that plugin's pinned
+   dependency. This workflow is the real, repeatable answer to "does the
+   Android build work," not a one-time claim — check its latest run for
+   current status before trusting an APK from an old one.
 
 ## Known gaps (please read before relying on this)
 
@@ -241,11 +259,12 @@ overlay — all matched the source design.
   runtime prompts are unverified. These are official plugin
   implementations, not code in this repo, but "compiles" isn't "works on
   a phone."
-- **Layer 1 (Wi-Fi Direct / Multipeer) is disabled**, not implemented —
-  see "Failover connection stack" above. This is a real feature gap, not
-  just an unverified corner: the app currently only finds peers over
-  mDNS (same Wi-Fi network) and BLE (handshake only, not data), never over
-  a direct Wi-Fi Direct/Multipeer link.
+- **Layer 1 (Wi-Fi Direct) is implemented and Android-only**, unverified
+  on a real device — see "Nothing here has run on an actual Android or
+  iOS device" above and "Failover connection stack" for what it does. On
+  iOS there is no Multipeer Connectivity equivalent yet, so iOS peers only
+  ever discover each other over mDNS (Layer 2) and BLE handshake (Layer 3),
+  never over a direct link.
 - **`android/` and `linux/` were generated with `flutter create` and
   build-verified (Linux locally, Android via CI); `ios/` platform project
   is not generated** — only the `Info.plist` keys are written by hand and
