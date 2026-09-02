@@ -1,4 +1,4 @@
-package com.s21.nearbyshare
+package com.s21.nearby_share
 
 import io.flutter.embedding.android.FlutterActivity
 
