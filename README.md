@@ -67,9 +67,23 @@ on a `#eae7e1` desktop background.
 
 | Layer | Purpose | Package |
 |---|---|---|
-| 1. Wi-Fi Direct / Multipeer | OS-managed high-throughput link, preferred | `flutter_nearby_connections` |
+| 1. Wi-Fi Direct / Multipeer | OS-managed high-throughput link, preferred | *disabled — see below* |
 | 2. mDNS / Bonjour | Zero-config discovery on the local router network | `bonsoir` |
 | 3. Bluetooth LE | Discovery/handshake only, never the file stream | `flutter_blue_plus` |
+
+**Layer 1 is currently a documented no-op**, not a working implementation.
+It originally depended on `flutter_nearby_connections`, discovered — by
+actually running the real build in CI, not by inspection — to be
+unmaintained (last published December 2023) and broken against any
+current Android Gradle Plugin: its own `android/build.gradle` calls the
+long-removed `jcenter()` repository and fails outright. Rather than ship a
+build that doesn't compile, `core/discovery/nearby_discovery_service.dart`
+stands this layer down cleanly (never active, never emits a peer) and the
+app runs on layers 2+3 alone; see that file's doc comment for maintained
+candidates to swap in (`flutter_p2p_connection`, `nearby_connections`),
+neither of which is a drop-in API match, so **build-verify (`flutter build
+apk`, ideally via the CI workflow) before trusting whichever one goes in**
+— the same mistake that put the dead plugin here in the first place.
 
 All three run concurrently (`AggregatedDiscoveryService`); a peer visible on
 more than one layer is de-duplicated with layer 1 preferred. **The file
@@ -164,9 +178,9 @@ hand-written code. In order:
 1. **`flutter pub get`** — the dependency versions first written (guessed
    from training knowledge, no live registry access) didn't all exist;
    every one was re-pinned against the real current pub.dev release
-   (`flutter_nearby_connections`, `bonsoir`, `flutter_blue_plus`,
-   `permission_handler`, `file_picker`, and others moved by 1-2 major
-   versions). `pubspec.lock` is committed with the resolved set.
+   (`bonsoir`, `flutter_blue_plus`, `permission_handler`, `file_picker`,
+   and others moved by 1-2 major versions). `pubspec.lock` is committed
+   with the resolved set.
 2. **`flutter analyze`** — clean (0 issues) after fixing real API drift:
    `bonsoir` 7.x's whole discovery-event API changed shape (no more
    `.ready`/`event.type`/`ResolvedBonsoirService` — see
@@ -197,30 +211,45 @@ Screenshots from that run — Home, Nearby (with the animated gradient
 banner), WiFi (a real scannable QR), Bluetooth, Settings, and the History
 overlay — all matched the source design.
 
+5. **A GitHub Actions CI workflow** (`.github/workflows/build-apk.yml`) —
+   added because this sandbox's network policy blocks `dl.google.com`,
+   so the Android SDK can't be installed here to build a real `.apk`
+   locally. This immediately proved its worth: the first two CI runs
+   both failed on real errors invisible to `flutter analyze`/the Linux
+   build — a missing `gradle-wrapper.properties` pinning an incompatible
+   Gradle version (fixed by regenerating `android/` with `flutter create
+   --platforms=android .`, the same approach used for `linux/`), and
+   `flutter_nearby_connections` (unmaintained since December 2023) fatally
+   calling the long-removed Gradle `jcenter()` repository in its own build
+   script. That plugin has been removed — see "Failover connection stack"
+   above and `core/discovery/nearby_discovery_service.dart` for what that
+   means and how to restore it properly. Once fixed, this workflow is the
+   real, repeatable answer to "does the Android build work," not a one-time
+   claim — check its latest run for current status before trusting an APK
+   from an old one.
+
 ## Known gaps (please read before relying on this)
 
 - **Nothing here has run on an actual Android or iOS device or emulator**
-  — this sandbox has neither SDK. The Linux desktop run above proves the
-  Dart application code (all of `lib/`) compiles and runs correctly, and
-  exercises the packages that ship a Linux implementation, but the
-  Android/iOS-native sides of `flutter_nearby_connections`,
-  `bonsoir_android`/`bonsoir_darwin`, `flutter_blue_plus_android`/`_darwin`,
-  and `permission_handler`'s real runtime prompts are unverified. These are
-  official plugin implementations, not code in this repo, but "compiles"
-  isn't "works on a phone."
-- **`NearbyShareEngine`'s Nearby-layer host/port resolution isn't wired
-  up.** The design (exchange host/port over the Nearby/Multipeer session's
-  control channel, see `core/transport/local_address.dart`) is decided,
-  but the actual invite/accept + control-message calls against
-  `flutter_nearby_connections` are left as a documented seam rather than
-  guessed at blind — `flutter_nearby_connections` has no Linux
-  implementation at all, so this seam specifically couldn't be exercised
-  by the verification above either. Until it's filled in, sending to a
-  Nearby-only peer (no mDNS host/port yet resolved) throws a clear error
-  instead of hanging.
-- **`android/` is hand-written, `ios/` platform project is not** — only
-  `linux/` was generated and verified. iOS only has the `Info.plist` keys
-  documented; run `flutter create .` on macOS to fill in the Xcode project
+  — this sandbox has neither SDK. The GitHub Actions workflow proves the
+  Android *build* succeeds; it doesn't prove the app behaves correctly at
+  runtime on a phone. The Linux desktop run further above proves the Dart
+  application code (all of `lib/`) runs correctly and exercises every
+  package that ships a Linux implementation, but the Android/iOS-native
+  sides of `bonsoir_android`/`bonsoir_darwin`,
+  `flutter_blue_plus_android`/`_darwin`, and `permission_handler`'s real
+  runtime prompts are unverified. These are official plugin
+  implementations, not code in this repo, but "compiles" isn't "works on
+  a phone."
+- **Layer 1 (Wi-Fi Direct / Multipeer) is disabled**, not implemented —
+  see "Failover connection stack" above. This is a real feature gap, not
+  just an unverified corner: the app currently only finds peers over
+  mDNS (same Wi-Fi network) and BLE (handshake only, not data), never over
+  a direct Wi-Fi Direct/Multipeer link.
+- **`android/` and `linux/` were generated with `flutter create` and
+  build-verified (Linux locally, Android via CI); `ios/` platform project
+  is not generated** — only the `Info.plist` keys are written by hand and
+  documented. Run `flutter create .` on macOS to fill in the Xcode project
   (it won't touch existing `lib/`/`pubspec.yaml`/`android/`), then open
   `ios/Runner.xcworkspace` in Xcode to set a signing team.
 - **iOS background execution is genuinely limited** — see the comment in

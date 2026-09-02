@@ -19,13 +19,11 @@ dependencies:
   # Provider is the seam between network services and UI state.
   provider: ^6.1.2
 
-  # Layer 1 — native Wi-Fi Direct (Android Nearby Connections) / Multipeer
-  # Connectivity (iOS), for discovery + framework-managed high-throughput
-  # local links. We use it for peer discovery/handshake; the actual file
-  # bytes always travel over our own encrypted TCP socket (see
-  # core/transport/), never through the plugin's own message channel, so
-  # throughput and chunking stay under our control on every layer.
-  flutter_nearby_connections: ^1.1.2
+  # Layer 1 (Wi-Fi Direct / Multipeer) has no dependency right now — see
+  # core/discovery/nearby_discovery_service.dart's doc comment for why
+  # (flutter_nearby_connections is dead and fails a modern Android build;
+  # this layer is a documented no-op until a maintained replacement is
+  # wired up and build-verified).
 
   # Layer 2 — mDNS / Bonjour discovery + advertisement on the local Wi-Fi
   # router network (zero-configuration).
