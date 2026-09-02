@@ -18,7 +18,9 @@ import 'discovery_service.dart';
 class NearbyDiscoveryService implements DiscoveryService {
   final _eventsController = StreamController<PeerEvent>.broadcast();
   final NearbyService _nearbyService = NearbyService();
-  StreamSubscription<List<Device>>? _stateSub;
+  // The plugin's own `stateChangedSubscription` returns a bare (untyped)
+  // `StreamSubscription`, not `StreamSubscription<List<Device>>`.
+  StreamSubscription? _stateSub;
   bool _active = false;
 
   @override

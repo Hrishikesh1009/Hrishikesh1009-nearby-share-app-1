@@ -1,6 +1,6 @@
-import 'dart:convert';
 import 'dart:io';
 
+import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 
 /// Streaming SHA-256 helpers. Both directions matter for memory safety:

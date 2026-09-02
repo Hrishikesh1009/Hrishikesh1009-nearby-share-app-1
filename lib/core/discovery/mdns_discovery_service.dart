@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:bonsoir/bonsoir.dart';
 
@@ -21,7 +20,7 @@ class MdnsDiscoveryService implements DiscoveryService {
 
   static const String serviceType = '_nearbyshare._tcp';
 
-  /// The port `core/transport/` is listening on, advertised via mDNS TXT.
+  /// The port `core/transport/` is listening on, advertised via mDNS.
   final int transferPort;
 
   final _eventsController = StreamController<PeerEvent>.broadcast();
@@ -30,6 +29,7 @@ class MdnsDiscoveryService implements DiscoveryService {
   BonsoirBroadcast? _broadcast;
   BonsoirDiscovery? _discovery;
   StreamSubscription<BonsoirDiscoveryEvent>? _discoverySub;
+  String? _advertisedName;
   bool _active = false;
 
   @override
@@ -44,54 +44,60 @@ class MdnsDiscoveryService implements DiscoveryService {
   @override
   Future<void> start({required String localDeviceName}) async {
     if (_active) return;
+    _advertisedName = localDeviceName;
 
-    final service = BonsoirService(
-      name: localDeviceName,
-      type: serviceType,
-      port: transferPort,
-    );
-    _broadcast = BonsoirBroadcast(service: service);
-    await _broadcast!.ready;
-    await _broadcast!.start();
+    final service = BonsoirService(name: localDeviceName, type: serviceType, port: transferPort);
+    final broadcast = BonsoirBroadcast(service: service);
+    await broadcast.initialize();
+    await broadcast.start();
+    _broadcast = broadcast;
 
-    _discovery = BonsoirDiscovery(type: serviceType);
-    await _discovery!.ready;
-    _discoverySub = _discovery!.eventStream?.listen(_onDiscoveryEvent);
-    await _discovery!.start();
+    final discovery = BonsoirDiscovery(type: serviceType);
+    await discovery.initialize();
+    // Must listen before start(): events (including the ones that arrive
+    // as part of starting) are only delivered to subscribers already
+    // attached to `eventStream`.
+    _discoverySub = discovery.eventStream?.listen((event) => _onDiscoveryEvent(event, discovery));
+    await discovery.start();
+    _discovery = discovery;
 
     _active = true;
   }
 
-  void _onDiscoveryEvent(BonsoirDiscoveryEvent event) {
-    switch (event.type) {
-      case BonsoirDiscoveryEventType.discoveryServiceResolved:
-        // Only the resolved-event variant of BonsoirService carries a host.
-        final resolved = event.service;
-        if (resolved is! ResolvedBonsoirService) return;
-        final host = resolved.host;
-        if (host == null) return;
-        if (resolved.name == Platform.localHostname) return; // never surface ourselves
-        final device = PeerDevice(
-          id: 'mdns:${resolved.name}',
-          name: resolved.name,
-          layer: TransportLayer.mdns,
-          lastSeen: DateTime.now(),
-          host: host,
-          port: resolved.port,
-        );
-        _known[device.id] = device;
-        _eventsController.add(PeerFound(device));
-        break;
-      case BonsoirDiscoveryEventType.discoveryServiceLost:
-        final lost = event.service;
-        if (lost == null) return;
-        final id = 'mdns:${lost.name}';
+  void _onDiscoveryEvent(BonsoirDiscoveryEvent event, BonsoirDiscovery discovery) {
+    switch (event) {
+      case BonsoirDiscoveryServiceFoundEvent():
+        // Found isn't resolved yet — hostAddresses is still empty. Kick off
+        // resolution; the actual address arrives via a Resolved event below.
+        unawaited(event.service.resolve(discovery.serviceResolver));
+      case BonsoirDiscoveryServiceResolvedEvent():
+        _upsert(event.service);
+      case BonsoirDiscoveryServiceUpdatedEvent():
+        _upsert(event.service);
+      case BonsoirDiscoveryServiceLostEvent():
+        final id = 'mdns:${event.service.name}';
         _known.remove(id);
         _eventsController.add(PeerLost(id, TransportLayer.mdns));
-        break;
       default:
         break;
     }
+  }
+
+  void _upsert(BonsoirService service) {
+    if (service.name == _advertisedName) return; // never surface ourselves
+    final host = service.hostAddress;
+    if (host == null) return;
+
+    final device = PeerDevice(
+      id: 'mdns:${service.name}',
+      name: service.name,
+      layer: TransportLayer.mdns,
+      lastSeen: DateTime.now(),
+      host: host,
+      port: service.port,
+    );
+    _known[device.id] = device;
+    _eventsController.add(PeerFound(device));
   }
 
   @override

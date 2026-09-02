@@ -50,8 +50,11 @@ class _AppShellState extends State<AppShell> {
   void _closeHistory() => setState(() => _historyOpen = false);
 
   Future<void> _openShareSheetFor(PeerDevice peer) async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
-    final paths = result?.files.where((f) => f.path != null).map((f) => f.path!) ?? const [];
+    // file_picker 12's FilePicker.pickFiles is a static method (no more
+    // `.platform` singleton) and returns `List<PlatformFile>` directly —
+    // an empty list is how a cancelled picker is represented now.
+    final picked = await FilePicker.pickFiles();
+    final paths = picked.where((f) => f.path != null).map((f) => f.path!);
     final files = paths.map(File.new).toList();
     if (files.isEmpty || !mounted) return;
     setState(() {

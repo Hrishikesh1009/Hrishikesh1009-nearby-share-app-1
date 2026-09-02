@@ -155,27 +155,74 @@ possible and the limit is documented in code:
   step). WiFi/Bluetooth/Discoverable map onto real, distinct behavior:
   browsing on the mDNS/BLE layer vs. this device advertising itself.
 
+## What's actually been verified
+
+This was built without a Flutter toolchain, then a Flutter 3.47.2 SDK was
+installed in the same sandbox specifically to check it — not just trust the
+hand-written code. In order:
+
+1. **`flutter pub get`** — the dependency versions first written (guessed
+   from training knowledge, no live registry access) didn't all exist;
+   every one was re-pinned against the real current pub.dev release
+   (`flutter_nearby_connections`, `bonsoir`, `flutter_blue_plus`,
+   `permission_handler`, `file_picker`, and others moved by 1-2 major
+   versions). `pubspec.lock` is committed with the resolved set.
+2. **`flutter analyze`** — clean (0 issues) after fixing real API drift:
+   `bonsoir` 7.x's whole discovery-event API changed shape (no more
+   `.ready`/`event.type`/`ResolvedBonsoirService` — see
+   `core/discovery/mdns_discovery_service.dart` for the rewrite against the
+   real sealed-event API), `file_picker` 12.x dropped the `.platform`
+   singleton for plain static methods, and a couple of my own mistakes
+   (`AccumulatorSink` is in `package:convert`, not `package:async`; a
+   `library` directive placed after imports).
+3. **`flutter test`** — a real widget test now passes; it originally caught
+   a genuine bug: `NearbyShareEngine.dispose()` unconditionally touched
+   `late final` service fields that are only assigned once `start()`
+   completes, throwing `LateInitializationError` if disposed any earlier.
+   Fixed with an explicit `_servicesInitialized` guard.
+4. **`flutter build linux --debug` + actually running it** (Xvfb + the
+   real GTK binary, screenshotted with `import`/`xdotool`) — the app
+   launches, and all five tabs, the History overlay, gradients, and the
+   real QR code render pixel-correct. This also surfaced a live bug class:
+   `bonsoir`'s Avahi client, `flutter_blue_plus_linux`'s BlueZ client, and
+   `network_info_plus`'s NetworkManager client can each throw *synchronously
+   inside `Stream.listen()`* rather than rejecting an awaited `Future` —
+   which silently escapes any `try/catch`/`.catchError()` around the call
+   (this sandbox has no D-Bus daemon, so all three did). Fixed generally
+   with a `runZonedGuarded` wrapper in `main.dart`, which is the correct
+   backstop for exactly this error class rather than a workaround specific
+   to this container.
+
+Screenshots from that run — Home, Nearby (with the animated gradient
+banner), WiFi (a real scannable QR), Bluetooth, Settings, and the History
+overlay — all matched the source design.
+
 ## Known gaps (please read before relying on this)
 
-- **No Flutter/Dart SDK was available in the sandbox this was written in.**
-  Nothing here has been run through `flutter pub get`, `flutter analyze`,
-  or a build. Run those first — third-party plugin API surfaces
-  (`flutter_nearby_connections`, `bonsoir`, `flutter_blue_plus`,
-  `cryptography`, `qr_flutter`) can drift between versions;
-  `core/discovery/nearby_discovery_service.dart` and
-  `core/discovery/mdns_discovery_service.dart` are the files most likely to
-  need small signature adjustments.
+- **Nothing here has run on an actual Android or iOS device or emulator**
+  — this sandbox has neither SDK. The Linux desktop run above proves the
+  Dart application code (all of `lib/`) compiles and runs correctly, and
+  exercises the packages that ship a Linux implementation, but the
+  Android/iOS-native sides of `flutter_nearby_connections`,
+  `bonsoir_android`/`bonsoir_darwin`, `flutter_blue_plus_android`/`_darwin`,
+  and `permission_handler`'s real runtime prompts are unverified. These are
+  official plugin implementations, not code in this repo, but "compiles"
+  isn't "works on a phone."
 - **`NearbyShareEngine`'s Nearby-layer host/port resolution isn't wired
   up.** The design (exchange host/port over the Nearby/Multipeer session's
   control channel, see `core/transport/local_address.dart`) is decided,
   but the actual invite/accept + control-message calls against
   `flutter_nearby_connections` are left as a documented seam rather than
-  guessed at blind. Until it's filled in, sending to a Nearby-only peer (no
-  mDNS host/port yet resolved) throws a clear error instead of hanging.
-- **`android/` is hand-written, `ios/` is not.** The Android Gradle files
-  here are enough to build; iOS only has the `Info.plist` keys documented.
-  Run `flutter create .` once you have the SDK — it fills in missing
-  platform folders without touching existing `lib/`/`pubspec.yaml`.
+  guessed at blind — `flutter_nearby_connections` has no Linux
+  implementation at all, so this seam specifically couldn't be exercised
+  by the verification above either. Until it's filled in, sending to a
+  Nearby-only peer (no mDNS host/port yet resolved) throws a clear error
+  instead of hanging.
+- **`android/` is hand-written, `ios/` platform project is not** — only
+  `linux/` was generated and verified. iOS only has the `Info.plist` keys
+  documented; run `flutter create .` on macOS to fill in the Xcode project
+  (it won't touch existing `lib/`/`pubspec.yaml`/`android/`), then open
+  `ios/Runner.xcworkspace` in Xcode to set a signing team.
 - **iOS background execution is genuinely limited** — see the comment in
   `ios/Runner/Info.plist`.
 - **Chunk pipelining.** The sender is intentionally stop-and-wait for a
@@ -188,11 +235,17 @@ possible and the limit is documented in code:
 ```bash
 flutter pub get
 flutter analyze
+flutter test
 flutter run
 ```
 
+`flutter run -d linux` works out of the box (verified above) if you want to
+poke at the UI without any mobile hardware — Wi-Fi Direct/BLE/mDNS peer
+discovery won't find anything without a real Avahi/BlueZ/NetworkManager
+D-Bus stack, but every screen renders and navigates.
+
 Android: `minSdk 26`, requires Android 13+ for full Nearby Wi-Fi permission
 support (falls back to location-based scan permission below that).
-iOS: run `flutter create .` first (see "Known gaps" above), then open
-`ios/Runner.xcworkspace` in Xcode to set a signing team — Wi-Fi
+iOS: run `flutter create .` on macOS first (see "Known gaps" above), then
+open `ios/Runner.xcworkspace` in Xcode to set a signing team — Wi-Fi
 Direct/Bluetooth discovery does not work in the simulator.

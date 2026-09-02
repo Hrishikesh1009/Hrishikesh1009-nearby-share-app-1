@@ -5,6 +5,7 @@ import '../../core/history/transfer_history_store.dart';
 import '../../core/services/nearby_share_engine.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/common.dart';
+import '../../widgets/icons.dart';
 
 /// The full Transfer History screen, shown as a full-bleed overlay above
 /// the current tab (matching the design's `position:absolute;inset:0`

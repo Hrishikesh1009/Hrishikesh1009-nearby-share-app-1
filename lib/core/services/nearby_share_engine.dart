@@ -80,6 +80,16 @@ class NearbyShareEngine extends ChangeNotifier {
   bool _ready = false;
   bool get isReady => _ready;
 
+  // Guards `dispose()`: it's reachable before `start()` has assigned the
+  // `late final` service fields below — a widget test that never calls
+  // `start()`, or a real app closed while `start()` is still mid-flight
+  // (permission prompt still showing, etc.) — and touching an
+  // unassigned `late final` field throws `LateInitializationError` rather
+  // than doing nothing. Set true the moment they're all assigned, not at
+  // the end of `start()` (discovery's own `start()` call after this point
+  // can still fail/hang independently — see its own try/catch per layer).
+  bool _servicesInitialized = false;
+
   Future<void> start() async {
     if (_ready) return;
     await PermissionService.ensureAll();
@@ -89,6 +99,7 @@ class NearbyShareEngine extends ChangeNotifier {
     _settingsStore = await AppSettingsStore.open();
     _transferServer = await TransferServer.bind();
     _discovery = AggregatedDiscoveryService(transferPort: _transferServer.port);
+    _servicesInitialized = true;
 
     _peersSub = _discovery.peers.listen((list) {
       _peers = list;
@@ -358,8 +369,10 @@ class NearbyShareEngine extends ChangeNotifier {
   void dispose() {
     unawaited(_peersSub?.cancel());
     unawaited(_requestsSub?.cancel());
-    unawaited(_discovery.stop());
-    unawaited(_transferServer.close());
+    if (_servicesInitialized) {
+      unawaited(_discovery.stop());
+      unawaited(_transferServer.close());
+    }
     super.dispose();
   }
 }
