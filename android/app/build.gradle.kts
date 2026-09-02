@@ -6,7 +6,12 @@ plugins {
 
 android {
     namespace = "com.s21.nearby_share"
-    compileSdk = flutter.compileSdkVersion
+    // Flutter's own default (flutter.compileSdkVersion, 36 as of this SDK)
+    // is one behind what permission_handler_android actually requires —
+    // found by a real CI build failure (CheckAarMetadataWorkAction),
+    // not guessed: ":app is currently compiled against android-36" while
+    // ":permission_handler_android requires ... version 37 or later."
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
