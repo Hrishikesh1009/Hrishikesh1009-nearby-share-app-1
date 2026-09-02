@@ -1,0 +1,58 @@
+name: nearby_share
+description: >
+  Zero-cloud, AirDrop-like local file sharing. Discovers peers over
+  Wi-Fi Direct / Multipeer Connectivity, mDNS on the local Wi-Fi router
+  network, and Bluetooth LE (handshake only), then streams files over an
+  encrypted raw TCP socket in resumable 4MB chunks.
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management: a single ChangeNotifier (NearbyShareEngine) exposed via
+  # Provider is the seam between network services and UI state.
+  provider: ^6.1.2
+
+  # Layer 1 — native Wi-Fi Direct (Android Nearby Connections) / Multipeer
+  # Connectivity (iOS), for discovery + framework-managed high-throughput
+  # local links. We use it for peer discovery/handshake; the actual file
+  # bytes always travel over our own encrypted TCP socket (see
+  # core/transport/), never through the plugin's own message channel, so
+  # throughput and chunking stay under our control on every layer.
+  flutter_nearby_connections: ^1.1.4
+
+  # Layer 2 — mDNS / Bonjour discovery + advertisement on the local Wi-Fi
+  # router network (zero-configuration).
+  bonsoir: ^5.1.5
+
+  # Layer 3 — Bluetooth LE for discovery/handshake only, never for the file
+  # stream itself.
+  flutter_blue_plus: ^1.35.3
+
+  # ECDH (X25519) + AEAD (AES-256-GCM) for the encrypted socket handshake
+  # and per-frame encryption.
+  cryptography: ^2.7.0
+
+  # Streaming SHA-256 for the pre-transfer file manifest hash and the
+  # post-transfer integrity check.
+  crypto: ^3.0.5
+
+  permission_handler: ^11.3.1
+  path_provider: ^2.1.4
+  uuid: ^4.4.2
+  device_info_plus: ^10.1.2
+  file_picker: ^8.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

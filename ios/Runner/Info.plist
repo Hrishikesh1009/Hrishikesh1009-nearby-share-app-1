@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Nearby Share</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.s21.nearbyshare</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>nearby_share</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(FLUTTER_BUILD_NAME)</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleVersion</key>
+	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIMainStoryboardFile</key>
+	<string>Main</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+
+	<!-- Layer 1: Multipeer Connectivity. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Nearby Share uses your local network to discover and connect to nearby devices for direct, zero-cloud file transfer.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<!-- Must match MdnsDiscoveryService.serviceType and whatever
+		     flutter_nearby_connections registers for its own Multipeer
+		     service name. -->
+		<string>_nearbyshare._tcp</string>
+	</array>
+
+	<!-- Layer 3: BLE discovery/handshake. -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Nearby Share uses Bluetooth to discover nearby devices before connecting over Wi-Fi.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Nearby Share uses Bluetooth to discover nearby devices before connecting over Wi-Fi.</string>
+
+	<!-- Background: keep an in-flight transfer's BLE handshake alive
+	     briefly if the app is backgrounded. Note this does not grant
+	     indefinite background execution for the TCP file stream itself —
+	     iOS suspends ordinary background sockets after roughly 30s unless
+	     a `bluetooth-central`/`bluetooth-peripheral` background mode is
+	     actively in use, which is a real platform limitation to design
+	     around (e.g. a `BGProcessingTask` resume-on-foreground flow),
+	     not something Info.plist keys alone solve. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>bluetooth-peripheral</string>
+	</array>
+</dict>
+</plist>
