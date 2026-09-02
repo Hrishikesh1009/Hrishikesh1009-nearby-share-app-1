@@ -41,6 +41,8 @@ class AggregatedDiscoveryService {
   Stream<List<PeerDevice>> get peers => _mergedController.stream;
 
   NearbyDiscoveryService get nearbyLayer => _layers[0] as NearbyDiscoveryService;
+  MdnsDiscoveryService get mdnsLayer => _layers[1] as MdnsDiscoveryService;
+  BleDiscoveryService get bleLayer => _layers[2] as BleDiscoveryService;
 
   Future<void> start({required String localDeviceName}) async {
     for (final layer in _layers) {

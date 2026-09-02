@@ -4,6 +4,7 @@ import 'dart:io';
 import '../models/transfer_models.dart';
 import '../protocol/wire_protocol.dart';
 import '../security/secure_channel.dart';
+import 'cancel_token.dart';
 import 'chunk_transfer.dart';
 import 'incoming_transfer_request.dart';
 
@@ -47,22 +48,32 @@ class TransferServer {
       _requestsController.add(IncomingTransferRequest(
         manifest: manifest,
         peerAddress: socket.remoteAddress,
-        onAccept: (savePath, onProgress) async {
+        onAccept: (savePath, onProgress, cancelToken) async {
           final file = File(savePath);
           // The on-disk file length is ground truth for resume — not the
           // JSON resume-store cache, which only records intent. A chunk is
           // never acked until it is flushed to disk, so length == offset.
           final resumeOffset = await file.exists() ? await file.length() : 0;
           await activeChannel.send(encodeAccept(resumeOffset));
+
+          final workFuture = runReceiver(
+            channel: activeChannel,
+            destinationFile: file,
+            manifest: manifest,
+            onProgress: onProgress,
+          );
           try {
-            await runReceiver(
-              channel: activeChannel,
-              destinationFile: file,
-              manifest: manifest,
-              onProgress: onProgress,
-            );
+            if (cancelToken != null) {
+              await Future.any<void>([
+                workFuture,
+                cancelToken.whenCancelled.then((_) => throw const TransferCancelledException()),
+              ]);
+            } else {
+              await workFuture;
+            }
           } finally {
             await activeChannel.close();
+            unawaited(workFuture.catchError((_) {}));
           }
         },
         onDecline: () async {

@@ -5,34 +5,35 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 
 import '../discovery/aggregated_discovery_service.dart';
+import '../history/transfer_history_store.dart';
 import '../models/peer_device.dart';
 import '../models/transfer_models.dart';
 import '../permissions/permission_service.dart';
 import '../resume/resume_store.dart';
 import '../security/file_hasher.dart';
+import '../settings/app_settings_store.dart';
+import '../transport/cancel_token.dart';
 import '../transport/chunk_transfer.dart';
 import '../transport/incoming_transfer_request.dart';
 import '../transport/transfer_client.dart';
 import '../transport/transfer_server.dart';
 
 /// The single source of truth every screen binds to. Owns discovery, the
-/// transfer server/client, resume state, and every [TransferSession] —
-/// this is the seam between network services and UI state the integration
-/// brief calls for: screens only read from / call methods on this class,
-/// never touch sockets, discovery plugins, or crypto directly.
+/// transfer server/client, resume state, settings and history — this is
+/// the seam between network services and UI state: no screen touches a
+/// socket, a discovery plugin, or the crypto layer directly.
 ///
 /// UI anchors this maps onto:
-///  - [peers]           -> Nearby Devices / Radar screen's list
-///  - [pendingRequest]  -> Accept File Confirmation modal (non-null = show it)
-///  - [activeSessions]  -> the transfer progress indicator(s)
+///  - [peers]            -> Nearby tab's device list / radar
+///  - [pendingRequest]    -> the incoming-file confirmation state of the transfer modal
+///  - [outgoingBatch]     -> the sending/progress state of the transfer modal
+///  - [history]/[settings] -> Home's Recent Activity, the History screen, Settings tab
 class NearbyShareEngine extends ChangeNotifier {
-  NearbyShareEngine({String? localDeviceName})
-      : _localDeviceName = localDeviceName ?? 'Device-${const Uuid().v4().substring(0, 4)}';
-
-  final String _localDeviceName;
   late final ResumeStore _resumeStore;
   late final TransferServer _transferServer;
   late final AggregatedDiscoveryService _discovery;
+  late final TransferHistoryStore _historyStore;
+  late final AppSettingsStore _settingsStore;
 
   StreamSubscription<List<PeerDevice>>? _peersSub;
   StreamSubscription<IncomingTransferRequest>? _requestsSub;
@@ -40,24 +41,41 @@ class NearbyShareEngine extends ChangeNotifier {
   List<PeerDevice> _peers = const [];
   List<PeerDevice> get peers => _peers;
 
+  /// Raw discovery layers, exposed read-only for the Bluetooth tab, which
+  /// (unlike the Nearby tab) needs literal BLE visibility rather than the
+  /// cross-layer de-duplicated [peers] list.
+  AggregatedDiscoveryService get discovery => _discovery;
+
+  TransferHistoryStore get history => _historyStore;
+  AppSettingsStore get settings => _settingsStore;
+
   IncomingTransferRequest? _pendingRequest;
 
-  /// Non-null exactly when the Accept File Confirmation modal should be
+  /// Non-null exactly when the incoming-file confirmation state should be
   /// showing.
   IncomingTransferRequest? get pendingRequest => _pendingRequest;
+
+  CancelToken? _outgoingCancelToken;
+  CancelToken? _incomingCancelToken;
 
   final Map<String, TransferSession> _sessions = {};
   List<TransferSession> get activeSessions => _sessions.values.toList(growable: false);
 
-  TransferSession? get currentTransfer {
-    for (final session in _sessions.values) {
-      if (session.status == TransferStatus.transferring ||
-          session.status == TransferStatus.connecting) {
-        return session;
-      }
-    }
-    return null;
-  }
+  BatchTransfer? _outgoingBatch;
+
+  /// The current outgoing send — one or more files to one peer, matching
+  /// the Share Sheet's multi-file selection. The transfer modal's
+  /// "File X of Y" / overall progress / ETA are all derived from this.
+  BatchTransfer? get outgoingBatch => _outgoingBatch;
+
+  TransferSession? _incomingSession;
+
+  /// The most recent incoming transfer, kept around (including its
+  /// terminal status) until [dismissIncoming] is called — mirrors
+  /// [outgoingBatch]'s `done` flag so the transfer modal can show a
+  /// completed/failed incoming transfer's result instead of the overlay
+  /// just vanishing the instant the last chunk lands.
+  TransferSession? get incomingSession => _incomingSession;
 
   bool _ready = false;
   bool get isReady => _ready;
@@ -67,6 +85,8 @@ class NearbyShareEngine extends ChangeNotifier {
     await PermissionService.ensureAll();
 
     _resumeStore = await ResumeStore.open();
+    _historyStore = await TransferHistoryStore.open();
+    _settingsStore = await AppSettingsStore.open();
     _transferServer = await TransferServer.bind();
     _discovery = AggregatedDiscoveryService(transferPort: _transferServer.port);
 
@@ -76,10 +96,57 @@ class NearbyShareEngine extends ChangeNotifier {
     });
     _requestsSub = _transferServer.requests.listen(_onIncomingRequest);
 
-    await _discovery.start(localDeviceName: _localDeviceName);
+    if (_settingsStore.discoverable) {
+      await _discovery.start(localDeviceName: _settingsStore.deviceName);
+    }
     _ready = true;
     notifyListeners();
   }
+
+  // ---- Settings -----------------------------------------------------------
+
+  Future<void> setDeviceName(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+    await _settingsStore.setDeviceName(trimmed);
+    if (_settingsStore.discoverable) {
+      await _restartDiscovery();
+    }
+    notifyListeners();
+  }
+
+  Future<void> setDiscoverable(bool value) async {
+    await _settingsStore.setDiscoverable(value);
+    if (value) {
+      await _discovery.start(localDeviceName: _settingsStore.deviceName);
+    } else {
+      await _discovery.stop();
+      _peers = const [];
+    }
+    notifyListeners();
+  }
+
+  Future<void> setSmartTransferEnabled(bool value) async {
+    await _settingsStore.setSmartTransferEnabled(value);
+    notifyListeners();
+  }
+
+  Future<void> setNotificationsEnabled(bool value) async {
+    await _settingsStore.setNotificationsEnabled(value);
+    notifyListeners();
+  }
+
+  Future<void> setWifiSharePassword(String value) async {
+    await _settingsStore.setWifiSharePassword(value);
+    notifyListeners();
+  }
+
+  Future<void> _restartDiscovery() async {
+    await _discovery.stop();
+    await _discovery.start(localDeviceName: _settingsStore.deviceName);
+  }
+
+  // ---- Incoming -------------------------------------------------------------
 
   void _onIncomingRequest(IncomingTransferRequest request) {
     // One manifest, one decision at a time: a second simultaneous inbound
@@ -89,7 +156,7 @@ class NearbyShareEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Called by the Accept File Confirmation modal's Accept button.
+  /// Called by the transfer modal's Accept button.
   Future<void> acceptIncoming(String savePath) async {
     final request = _pendingRequest;
     if (request == null) return;
@@ -114,22 +181,41 @@ class NearbyShareEngine extends ChangeNotifier {
       savePath: savePath,
     );
     _sessions[session.id] = session;
+    _incomingSession = session;
     notifyListeners();
 
+    final cancelToken = CancelToken();
+    _incomingCancelToken = cancelToken;
     final tracker = _RateTracker(session.manifest.fileSize);
     try {
-      await request.accept(savePath, onProgress: (bytes) => _onProgress(session, tracker, bytes));
+      await request.accept(
+        savePath,
+        onProgress: (bytes) => _onProgress(session, tracker, bytes),
+        cancelToken: cancelToken,
+      );
       session.status = TransferStatus.completed;
       await _resumeStore.clear(session.id);
+      await _historyStore.add(HistoryEntry(
+        id: session.id,
+        name: session.manifest.fileName,
+        size: formatBytes(session.manifest.fileSize),
+        peerName: peer.name,
+        direction: HistoryDirection.received,
+        timestamp: DateTime.now(),
+      ));
+    } on TransferCancelledException {
+      session.status = TransferStatus.cancelled;
     } catch (e) {
       session.status = TransferStatus.failed;
       session.errorMessage = e.toString();
+    } finally {
+      if (identical(_incomingCancelToken, cancelToken)) _incomingCancelToken = null;
     }
     notifyListeners();
   }
 
-  /// Called by the Accept File Confirmation modal's Decline button —
-  /// gracefully terminates the socket without moving any file bytes.
+  /// Called by the transfer modal's Decline button — gracefully terminates
+  /// the socket without moving any file bytes.
   Future<void> declineIncoming() async {
     final request = _pendingRequest;
     if (request == null) return;
@@ -138,59 +224,122 @@ class NearbyShareEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Called from the discovery/radar screen once the user has picked both
-  /// a peer and a local file.
-  Future<void> sendFile(PeerDevice peer, File file) async {
+  // ---- Outgoing -------------------------------------------------------------
+
+  /// Called from the Share Sheet's Send button: streams [files] to [peer]
+  /// one at a time, tracked as a single [BatchTransfer] the transfer modal
+  /// renders (title, "File X of Y", aggregate progress/ETA).
+  Future<void> sendFiles(PeerDevice peer, List<File> files) async {
+    if (files.isEmpty) return;
     final host = peer.host;
     final port = peer.port;
     if (host == null || port == null) {
       throw StateError(
         '${peer.name} has no reachable data layer yet '
         '(BLE-only peers are discovery/handshake only; wait for the Nearby '
-        'or mDNS layer to resolve a socket address).',
+        'or WiFi layer to resolve a socket address).',
       );
     }
 
-    final fileSize = await file.length();
-    final sha256 = await FileHasher.sha256Hex(file);
-    final manifest = TransferManifest(
-      transferId: const Uuid().v4(),
-      fileName: file.uri.pathSegments.isNotEmpty ? file.uri.pathSegments.last : 'file',
-      fileSize: fileSize,
-      sha256Hex: sha256,
-      chunkSize: kChunkSize,
-    );
-
-    final session = TransferSession(
-      manifest: manifest,
-      direction: TransferDirection.outgoing,
-      peer: peer,
-      sourcePath: file.path,
-    );
-    _sessions[session.id] = session;
+    final sizes = await Future.wait(files.map((f) => f.length()));
+    final totalBytes = sizes.fold<int>(0, (a, b) => a + b);
+    final batch = BatchTransfer(peer: peer, files: files, totalBytes: totalBytes);
+    _outgoingBatch = batch;
     notifyListeners();
 
-    final tracker = _RateTracker(manifest.fileSize);
-    try {
-      await TransferClient.sendFile(
-        host: InternetAddress(host),
-        port: port,
-        sourceFile: file,
-        manifest: manifest,
-        onProgress: (bytes) => _onProgress(session, tracker, bytes),
-        onStatus: (status) {
-          session.status = status;
-          notifyListeners();
-        },
+    for (var i = 0; i < files.length; i++) {
+      if (batch.cancelled) break;
+      batch.currentIndex = i;
+      final file = files[i];
+
+      final sha256 = await FileHasher.sha256Hex(file);
+      final manifest = TransferManifest(
+        transferId: const Uuid().v4(),
+        fileName: file.uri.pathSegments.isNotEmpty ? file.uri.pathSegments.last : 'file',
+        fileSize: sizes[i],
+        sha256Hex: sha256,
+        chunkSize: kChunkSize,
       );
-      if (session.status == TransferStatus.completed) {
-        await _resumeStore.clear(session.id);
-      }
-    } catch (e) {
-      session.status = TransferStatus.failed;
-      session.errorMessage = e.toString();
+      final session = TransferSession(
+        manifest: manifest,
+        direction: TransferDirection.outgoing,
+        peer: peer,
+        sourcePath: file.path,
+      );
+      batch.currentSession = session;
+      _sessions[session.id] = session;
       notifyListeners();
+
+      final cancelToken = CancelToken();
+      _outgoingCancelToken = cancelToken;
+      final tracker = _RateTracker(manifest.fileSize);
+      try {
+        await TransferClient.sendFile(
+          host: InternetAddress(host),
+          port: port,
+          sourceFile: file,
+          manifest: manifest,
+          onProgress: (bytes) => _onProgress(session, tracker, bytes),
+          onStatus: (status) {
+            session.status = status;
+            notifyListeners();
+          },
+          cancelToken: cancelToken,
+        );
+        if (session.status == TransferStatus.completed) {
+          await _resumeStore.clear(session.id);
+          await _historyStore.add(HistoryEntry(
+            id: session.id,
+            name: manifest.fileName,
+            size: formatBytes(manifest.fileSize),
+            peerName: peer.name,
+            direction: HistoryDirection.sent,
+            timestamp: DateTime.now(),
+          ));
+        } else if (session.status == TransferStatus.declined) {
+          batch.error = '${peer.name} declined the transfer';
+          notifyListeners();
+          break;
+        }
+      } on TransferCancelledException {
+        session.status = TransferStatus.cancelled;
+        batch.cancelled = true;
+      } catch (e) {
+        session.status = TransferStatus.failed;
+        session.errorMessage = e.toString();
+        batch.error = e.toString();
+        notifyListeners();
+        break;
+      } finally {
+        if (identical(_outgoingCancelToken, cancelToken)) _outgoingCancelToken = null;
+      }
+      batch.bytesCompletedBeforeCurrent += sizes[i];
     }
+
+    batch.done = true;
+    notifyListeners();
+  }
+
+  /// Called by the transfer modal's Cancel button, for whichever direction
+  /// is currently active.
+  void cancelCurrentTransfer() {
+    _outgoingCancelToken?.cancel();
+    _incomingCancelToken?.cancel();
+    _outgoingBatch?.cancelled = true;
+  }
+
+  /// Dismisses a finished (or failed/cancelled) transfer modal.
+  void dismissTransfer() {
+    if (_outgoingBatch?.done ?? false) {
+      _outgoingBatch = null;
+    }
+    final incoming = _incomingSession;
+    if (incoming != null &&
+        incoming.status != TransferStatus.transferring &&
+        incoming.status != TransferStatus.connecting) {
+      _incomingSession = null;
+    }
+    notifyListeners();
   }
 
   void _onProgress(TransferSession session, _RateTracker tracker, int bytesSoFar) {
@@ -213,6 +362,27 @@ class NearbyShareEngine extends ChangeNotifier {
     unawaited(_transferServer.close());
     super.dispose();
   }
+}
+
+/// One or more files being sent to one peer, tracked as a unit — backs the
+/// transfer modal's "File X of Y" and aggregate progress/ETA.
+class BatchTransfer {
+  BatchTransfer({required this.peer, required this.files, required this.totalBytes});
+
+  final PeerDevice peer;
+  final List<File> files;
+  final int totalBytes;
+
+  int currentIndex = 0;
+  int bytesCompletedBeforeCurrent = 0;
+  TransferSession? currentSession;
+  bool done = false;
+  bool cancelled = false;
+  String? error;
+
+  int get overallBytesTransferred =>
+      bytesCompletedBeforeCurrent + (currentSession?.progress.bytesTransferred ?? 0);
+  double get overallFraction => totalBytes == 0 ? 0 : overallBytesTransferred / totalBytes;
 }
 
 /// Smooths raw progress callbacks (which can fire in bursts) into the

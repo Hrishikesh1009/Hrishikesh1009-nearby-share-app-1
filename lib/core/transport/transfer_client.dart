@@ -4,6 +4,7 @@ import 'dart:io';
 import '../models/transfer_models.dart';
 import '../protocol/wire_protocol.dart';
 import '../security/secure_channel.dart';
+import 'cancel_token.dart';
 import 'chunk_transfer.dart';
 
 /// Outgoing side of one transfer: dial the peer's transfer socket, hand
@@ -17,12 +18,13 @@ class TransferClient {
     required TransferManifest manifest,
     required void Function(int bytesSent) onProgress,
     required void Function(TransferStatus status) onStatus,
+    CancelToken? cancelToken,
   }) async {
     onStatus(TransferStatus.connecting);
     final socket = await Socket.connect(host, port, timeout: const Duration(seconds: 10));
     final channel = await SecureChannel.handshake(socket, isInitiator: true);
 
-    try {
+    Future<void> work() async {
       onStatus(TransferStatus.awaitingAcceptance);
       await channel.send(encodeManifest(manifest.toJson()));
 
@@ -47,8 +49,25 @@ class TransferClient {
         onProgress: onProgress,
       );
       onStatus(TransferStatus.completed);
+    }
+
+    final workFuture = work();
+    try {
+      if (cancelToken != null) {
+        await Future.any<void>([
+          workFuture,
+          cancelToken.whenCancelled.then((_) => throw const TransferCancelledException()),
+        ]);
+      } else {
+        await workFuture;
+      }
     } finally {
       await channel.close();
+      // Closing the channel out from under a still-running `work()` (the
+      // cancel path) makes its next send/receive throw. That error has
+      // nowhere useful to go once we've already reported the cancel —
+      // swallow it here instead of leaving an unhandled Future rejection.
+      unawaited(workFuture.catchError((_) {}));
     }
   }
 }

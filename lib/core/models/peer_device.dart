@@ -19,12 +19,20 @@ class PeerDevice {
     this.host,
     this.port,
     this.nearbyEndpointId,
+    this.rssi,
   });
 
   final String id;
   final String name;
   final TransportLayer layer;
   final DateTime lastSeen;
+
+  /// BLE received-signal-strength, in dBm, when [layer] is
+  /// [TransportLayer.ble] (typically -30 to -100; closer to 0 is
+  /// stronger). Null for every other layer — the Nearby tab's signal bars
+  /// show full strength for those, since an mDNS/Nearby peer is already a
+  /// confirmed usable link rather than a distance estimate.
+  final int? rssi;
 
   /// Set when [layer] is [TransportLayer.mdns]: the resolved LAN address to
   /// dial the peer's TCP transfer socket on.
@@ -40,7 +48,18 @@ class PeerDevice {
   /// deterministic avatar/color per device without needing real artwork.
   int get avatarSeed => id.codeUnits.fold(0, (sum, c) => (sum + c) & 0xFFFF);
 
-  PeerDevice copyWith({DateTime? lastSeen, String? host, int? port}) {
+  /// 1-3, for the Nearby tab's signal-strength bars. BLE maps [rssi] onto
+  /// three rough bands; every other layer reports full strength (see
+  /// [rssi]'s doc comment).
+  int get signalBars {
+    final r = rssi;
+    if (r == null) return 3;
+    if (r >= -60) return 3;
+    if (r >= -80) return 2;
+    return 1;
+  }
+
+  PeerDevice copyWith({DateTime? lastSeen, String? host, int? port, int? rssi}) {
     return PeerDevice(
       id: id,
       name: name,
@@ -49,6 +68,7 @@ class PeerDevice {
       host: host ?? this.host,
       port: port ?? this.port,
       nearbyEndpointId: nearbyEndpointId,
+      rssi: rssi ?? this.rssi,
     );
   }
 

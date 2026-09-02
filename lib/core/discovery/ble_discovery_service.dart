@@ -34,6 +34,12 @@ class BleDiscoveryService implements DiscoveryService {
   @override
   bool get isActive => _active;
 
+  /// A synchronous snapshot of everything currently visible on this layer
+  /// specifically — used by the Bluetooth tab, which (unlike the Nearby
+  /// tab) needs to show raw BLE visibility rather than the cross-layer
+  /// de-duplicated list `AggregatedDiscoveryService.peers` produces.
+  List<PeerDevice> get currentDevices => _known.values.toList(growable: false);
+
   @override
   Future<void> start({required String localDeviceName}) async {
     if (_active) return;
@@ -66,12 +72,14 @@ class BleDiscoveryService implements DiscoveryService {
         name: name,
         layer: TransportLayer.ble,
         lastSeen: now,
+        rssi: result.rssi,
       );
-      final isNew = !_known.containsKey(id);
       _known[id] = device;
-      if (isNew) {
-        _eventsController.add(PeerFound(device));
-      }
+      // Emitted on every sighting, not just new ones, so RSSI-driven
+      // signal-bar updates reach listeners that treat this stream purely
+      // as a "something changed, re-read currentDevices" tick (the
+      // Bluetooth tab does this).
+      _eventsController.add(PeerFound(device));
     }
   }
 
